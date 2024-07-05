@@ -13,6 +13,7 @@ use Magento\Store\Model\StoreManagerInterface;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class RemoveDuplicate extends Command
@@ -43,8 +44,14 @@ class RemoveDuplicate extends Command
                 'dryrun',
                 'd',
                 InputOption::VALUE_OPTIONAL,
-                'Unlink the duplicate files from system',
+                'Dry-run does not delete any values or files',
                 true
+            )
+            ->addArgument(
+                'products',
+                InputArgument::IS_ARRAY,
+                'Product entity SKUs to filter on',
+                null
             );
     }
 
@@ -54,16 +61,23 @@ class RemoveDuplicate extends Command
 
         $this->storeManager->setCurrentStore(0);
 
+        $unlink = $input->getOption('unlink') === 'false' ? false : $input->getOption('unlink');
+        $dryrun = $input->getOption('dryrun') === 'false' ? false : $input->getOption('dryrun');
+
         $mediaUrl = $this->storeManager->getStore()->getBaseUrl(\Magento\Framework\UrlInterface::URL_TYPE_MEDIA);
         $path = $this->directoryList->getPath('media');
         $productCollection = $this->productCollectionFactory->create();
-        $productCollection->addIdFilter($this->getEntityIds());
+        if ($input->getArgument('products')) {
+            $productCollection->addFieldToFilter('sku' , ['in' => $input->getArgument('products')]);
+        } else {
+            $productCollection->addIdFilter($this->getEntityIds());
+        }
 
         $i = 0;
         $total = $productCollection->getSize();
         $count = 0;
 
-        if ($input->getOption('dryrun')) {
+        if ($dryrun) {
             $output->writeln('THIS IS A DRY-RUN, NO CHANGES WILL BE MADE!');
         }
         $output->writeln($total . ' products found with 2 images or more.');
@@ -106,17 +120,16 @@ class RemoveDuplicate extends Command
                                 continue;
                             }
                             unset($gallery[$key]);
+                            $filepaths[] = $filepath;
                             $output->writeln('Removed duplicate image from ' . $product->getSku());
                             $count++;
                             $shouldSave = true;
                         } else {
                             $md5Values[] = $md5;
                         }
-
-                        $filepaths[] = $filepath;
                     }
 
-                    if (!$input->getOption('dryrun') && $shouldSave) {
+                    if (!$dryrun && $shouldSave) {
                         $product->setMediaGalleryEntries($gallery);
                         try {
                             $this->productRepository->save($product);
@@ -128,15 +141,14 @@ class RemoveDuplicate extends Command
                     foreach ($filepaths as $filepath) {
                         if (is_file($filepath)) {
                             if (
-                                !$input->getOption('dryrun')
-                                && $input->getOption('unlink')
+                                !$dryrun
+                                && $unlink
                                 && $shouldSave
                             ) {
                                 unlink($filepath);
                             }
                             if (
-                                $input->getOption('dryrun')
-                                && $input->getOption('unlink')
+                                $unlink
                                 && $shouldSave
                             ) {
                                 $output->writeln('Deleted file: ' . $filepath);
@@ -147,7 +159,7 @@ class RemoveDuplicate extends Command
             }
         }
 
-        if ($input->getOption('dryrun')) {
+        if ($dryrun) {
             $output->writeln('THIS WAS A DRY-RUN, NO CHANGES WERE MADE!');
         } else {
             $output->writeln('Duplicate images are removed');
