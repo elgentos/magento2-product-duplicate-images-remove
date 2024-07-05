@@ -1,0 +1,43 @@
+{
+  "name": "elgentos/magento2-product-duplicate-images-remove",
+  "description":"Magento 2 find duplicate product images from your product list and from this list you can easily remove them by running a command",
+  "keywords": [
+    "magento 2",
+    "magento",
+    "m2",
+    "magegadgets",
+    "duplicate product images",
+    "duplicate product images remove",
+    "product images remove",
+    "magento 2 extension",
+    "magento 2 extension free"
+  ],
+  "require": {
+    "php": "*",
+    "magento/framework": "100.0.*|100.1.*|101.0.*|102.0.*|103.0.*"
+  },
+  "type": "magento2-module",
+  "license": [
+    "OSL-3.0",
+    "AFL-3.0"
+  ],
+  "authors": [
+    {
+      "name": "Magegadgets",
+      "email": "sales@magegadgets.com",
+      "role": "Magento 2 Extensions"
+    },
+    {
+      "name": "Peter Jaap Blaakmeer",
+      "email": "peterjaap@elgentos.nl"
+    }
+  ],
+  "autoload": {
+    "files": [
+      "registration.php"
+    ],
+    "psr-4": {
+      "Elgentos\\RemoveDuplicateImage\\": ""
+    }
+  }
+}
