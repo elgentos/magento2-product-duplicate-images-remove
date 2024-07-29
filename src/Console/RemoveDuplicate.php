@@ -91,7 +91,7 @@ class RemoveDuplicate extends Command
             if ($baseImage !== 'no_selection') {
                 $filepath = $path . '/catalog/product' . $baseImage;
                 if (file_exists($filepath) && is_file($filepath)) {
-                    $md5Values[] = md5(file_get_contents($filepath));
+                    $md5Values[] = md5_file($filepath);
                 }
 
                 $i++;
@@ -110,7 +110,7 @@ class RemoveDuplicate extends Command
                         $filepath = $path . '/catalog/product' . $galleryImage->getFile();
 
                         if (file_exists($filepath)) {
-                            $md5 = md5(file_get_contents($filepath));
+                            $md5 = md5_file($filepath);
                         } else {
                             continue;
                         }
