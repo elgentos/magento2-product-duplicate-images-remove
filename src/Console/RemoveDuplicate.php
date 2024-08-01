@@ -4,31 +4,91 @@ declare(strict_types=1);
 
 namespace Elgentos\RemoveDuplicateImage\Console;
 
+use Magento\Catalog\Api\Data\ProductSearchResultsInterface;
 use Magento\Catalog\Api\ProductRepositoryInterface;
-use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory as ProductCollectionFactory;
+use Magento\Framework\Api\SearchCriteriaBuilder;
 use Magento\Framework\App\Area;
-use Magento\Framework\App\State;
 use Magento\Framework\App\Filesystem\DirectoryList;
+use Magento\Framework\App\ResourceConnection;
+use Magento\Framework\App\State;
+use Magento\Framework\Console\Cli;
+use Magento\Framework\Exception\FileSystemException;
+use Magento\Framework\Filesystem\Driver\File;
 use Magento\Store\Model\StoreManagerInterface;
 use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
-use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Output\OutputInterface;
 
 class RemoveDuplicate extends Command
 {
+    /**
+     * @var SearchCriteriaBuilder
+     */
+    private $searchCriteriaBuilder;
+
+    /**
+     * @var State
+     */
+    private $state;
+
+    /**
+     * @var ProductRepositoryInterface
+     */
+    private $productRepository;
+
+    /**
+     * @var StoreManagerInterface
+     */
+    private $storeManager;
+
+    /**
+     * @var DirectoryList
+     */
+    private $directoryList;
+
+    /**
+     * @var ResourceConnection
+     */
+    private $resource;
+
+    /**
+     * @var File
+     */
+    private $fileDriver;
+
+    /**
+     * @param SearchCriteriaBuilder $searchCriteriaBuilder
+     * @param State $state
+     * @param ProductRepositoryInterface $productRepository
+     * @param StoreManagerInterface $storeManager
+     * @param DirectoryList $directoryList
+     * @param ResourceConnection $resource
+     * @param File $fileDriver
+     */
     public function __construct(
-        private readonly State $state,
-        private readonly ProductRepositoryInterface $productRepository,
-        private readonly ProductCollectionFactory $productCollectionFactory,
-        private readonly StoreManagerInterface $storeManager,
-        private readonly DirectoryList $directoryList,
-        private readonly \Magento\Framework\App\ResourceConnection $resource,
+        SearchCriteriaBuilder $searchCriteriaBuilder,
+        State $state,
+        ProductRepositoryInterface $productRepository,
+        StoreManagerInterface $storeManager,
+        DirectoryList $directoryList,
+        ResourceConnection $resource,
+        File $fileDriver
     ) {
+        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+        $this->state = $state;
+        $this->productRepository = $productRepository;
+        $this->storeManager = $storeManager;
+        $this->directoryList = $directoryList;
+        $this->resource = $resource;
+        $this->fileDriver = $fileDriver;
         parent::__construct();
     }
 
+    /**
+     * @inheritdoc
+     */
     protected function configure()
     {
         $this->setName('duplicate:remove')
@@ -55,120 +115,141 @@ class RemoveDuplicate extends Command
             );
     }
 
+    /**
+     * @inheritdoc
+     */
     protected function execute(InputInterface $input, OutputInterface $output)
     {
-        $this->state->setAreaCode(Area::AREA_GLOBAL);
+        try {
+            $this->state->setAreaCode(Area::AREA_GLOBAL);
+        } catch (\Exception $e) {
+            return Cli::RETURN_FAILURE;
+        }
 
         $this->storeManager->setCurrentStore(0);
 
-        $unlink = $input->getOption('unlink') === 'false' ? false : $input->getOption('unlink');
-        $dryrun = $input->getOption('dryrun') === 'false' ? false : $input->getOption('dryrun');
+        $isUnlink = !($input->getOption('unlink') === 'false') && $input->getOption('unlink');
+        $isDryRun = !($input->getOption('dryrun') === 'false') && $input->getOption('dryrun');
 
-        $mediaUrl = $this->storeManager->getStore()->getBaseUrl(\Magento\Framework\UrlInterface::URL_TYPE_MEDIA);
         $path = $this->directoryList->getPath('media');
-        $productCollection = $this->productCollectionFactory->create();
+
+        $targetProductSku = $input->getArgument('products') ?: $this->getEntityIds();
+        $searchCriteriaBuilder = $this->searchCriteriaBuilder
+            ->addFilter('image', 'no_selection', 'neq');
+
         if ($input->getArgument('products')) {
-            $productCollection->addFieldToFilter('sku' , ['in' => $input->getArgument('products')]);
+            $searchCriteriaBuilder->addFilter('sku', $targetProductSku, 'in');
         } else {
-            $productCollection->addIdFilter($this->getEntityIds());
+            $searchCriteriaBuilder->addFilter('entity_id', $this->getEntityIds(), 'in');
         }
 
-        $i = 0;
-        $total = $productCollection->getSize();
-        $count = 0;
+        $searchCriteriaBuilder = $searchCriteriaBuilder->create();
 
-        if ($dryrun) {
+        /** @var ProductSearchResultsInterface $products */
+        $products = $this->productRepository->getList($searchCriteriaBuilder);
+
+        if (!$products->getTotalCount()) {
+            return Cli::RETURN_SUCCESS;
+        }
+
+        if ($isDryRun) {
             $output->writeln('THIS IS A DRY-RUN, NO CHANGES WILL BE MADE!');
         }
-        $output->writeln($total . ' products found with 2 images or more.');
+        $output->writeln(sprintf('%s products found with 2 images or more.', $products->getTotalCount()));
 
-        foreach ($productCollection as $product) {
-            $product = $this->productRepository->getById($product->getId());
+        foreach ($products->getItems() as $product) {
             $product->setStoreId(0);
             $md5Values = [];
             $baseImage = $product->getImage();
 
-            if ($baseImage !== 'no_selection') {
-                $filepath = $path . '/catalog/product' . $baseImage;
-                if (file_exists($filepath) && is_file($filepath)) {
-                    $md5Values[] = md5_file($filepath);
+            $filePath = $path . '/catalog/product' . $baseImage;
+            if ($this->isFileExists($filePath)) {
+                $md5Values[] = md5_file($filePath);
+            }
+
+            $gallery = $product->getMediaGalleryEntries();
+
+            $shouldSave = false;
+            $filePaths = [];
+
+            if (empty($gallery)) {
+                return Cli::RETURN_SUCCESS;
+            }
+
+            foreach ($gallery as $key => $galleryImage) {
+                if ($galleryImage->getFile() == $baseImage) {
+                    continue;
                 }
 
-                $i++;
-                $output->writeln("Processing product $i of $total");
+                $filePath = $path . '/catalog/product' . $galleryImage->getFile();
 
-                $gallery = $product->getMediaGalleryEntries();
+                if ($this->isFileExists($filePath)) {
+                    $md5 = md5_file($filePath);
+                } else {
+                    continue;
+                }
 
-                $shouldSave = false;
-
-                $filepaths = [];
-                if ($gallery && count($gallery)) {
-                    foreach ($gallery as $key => $galleryImage) {
-                        if ($galleryImage->getFile() == $baseImage) {
-                            continue;
-                        }
-                        $filepath = $path . '/catalog/product' . $galleryImage->getFile();
-
-                        if (file_exists($filepath)) {
-                            $md5 = md5_file($filepath);
-                        } else {
-                            continue;
-                        }
-
-                        if (in_array($md5, $md5Values)) {
-                            if (count($galleryImage->getTypes()) > 0) {
-                                continue;
-                            }
-                            unset($gallery[$key]);
-                            $filepaths[] = $filepath;
-                            $output->writeln('Removed duplicate image from ' . $product->getSku());
-                            $count++;
-                            $shouldSave = true;
-                        } else {
-                            $md5Values[] = $md5;
-                        }
+                if (in_array($md5, $md5Values)) {
+                    if (count($galleryImage->getTypes()) > 0) {
+                        continue;
                     }
+                    unset($gallery[$key]);
+                    $filePaths[] = $filePath;
+                    $output->writeln(sprintf('Removed duplicate image from %s', $product->getSku()));
+                    $shouldSave = true;
+                } else {
+                    $md5Values[] = $md5;
+                }
+            }
 
-                    if (!$dryrun && $shouldSave) {
-                        $product->setMediaGalleryEntries($gallery);
-                        try {
-                            $this->productRepository->save($product);
-                        } catch (\Exception $e) {
-                            $output->writeln('Could not save product: ' . $e->getMessage());
-                        }
-                    }
+            if (!$isDryRun && $shouldSave) {
+                $product->setMediaGalleryEntries($gallery);
+                try {
+                    $this->productRepository->save($product);
+                } catch (\Exception $e) {
+                    $output->writeln('Could not save product: ' . $e->getMessage());
+                }
+            }
 
-                    foreach ($filepaths as $filepath) {
-                        if (is_file($filepath)) {
-                            if (
-                                !$dryrun
-                                && $unlink
-                                && $shouldSave
-                            ) {
-                                unlink($filepath);
-                            }
-                            if (
-                                $unlink
-                                && $shouldSave
-                            ) {
-                                $output->writeln('Deleted file: ' . $filepath);
-                            }
-                        }
+            foreach ($filePaths as $filePath) {
+                if (!$this->isFile($filePath)) {
+                    continue;
+                }
+
+                if (!$isDryRun
+                    && $isUnlink
+                    && $shouldSave
+                ) {
+                    try {
+                        $this->fileDriver->deleteFile($filePath);
+                    } catch (FileSystemException $e) {
+                        continue;
                     }
+                }
+
+                if ($isUnlink
+                    && $shouldSave
+                ) {
+                    $output->writeln('Deleted file: ' . $filePath);
                 }
             }
         }
 
-        if ($dryrun) {
+        if ($isDryRun) {
             $output->writeln('THIS WAS A DRY-RUN, NO CHANGES WERE MADE!');
         } else {
             $output->writeln('Duplicate images are removed');
         }
 
-        return Command::SUCCESS;
+        return Cli::RETURN_SUCCESS;
     }
 
-    public function getEntityIds()
+    /**
+     * Get Entity IDs related
+     *
+     * @return array
+     */
+    public function getEntityIds(): array
     {
         $connection = $this->resource->getConnection();
         $tableName = $this->resource->getTableName('catalog_product_entity_media_gallery_value_to_entity');
@@ -178,8 +259,40 @@ class RemoveDuplicate extends Command
             ->group('entity_id')
             ->having('COUNT(entity_id) >= 2');
 
-        $result = $connection->fetchCol($select);
+        return $connection->fetchCol($select);
+    }
 
-        return $result;
+    /**
+     * Is file exists
+     *
+     * @param string $path
+     * @return bool
+     */
+    protected function isFileExists(string $path): bool
+    {
+        try {
+            $fileExists = $this->fileDriver->isExists($path);
+        } catch (\Exception $exception) {
+            $fileExists = false;
+        }
+
+        return $fileExists;
+    }
+
+    /***
+     * Tells whether the filename is a regular file
+     *
+     * @param string $path
+     * @return bool
+     */
+    protected function isFile(string $path): bool
+    {
+        try {
+            $isFile = $this->fileDriver->isFile($path);
+        } catch (\Exception $exception) {
+            $isFile = false;
+        }
+
+        return $isFile;
     }
 }

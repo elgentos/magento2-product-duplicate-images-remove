@@ -20,3 +20,16 @@ This Extension allows you to find duplicate product images from your product lis
    ```
    php bin/magento duplicate:remove
    ```
+Eg:
+```sh
+# Use unlink
+php bin/magento duplicate:remove -u1
+
+# Turn off dry run
+php bin/magento duplicate:remove -d0
+
+# Combine unlink and turn off dry run
+php bin/magento duplicate:remove -u1 -d0
+
+# Specific on some sku
+php bin/magento duplicate:remove -u1 -d0 SKU1 SKU2 SKU3
