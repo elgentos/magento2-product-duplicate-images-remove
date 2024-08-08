@@ -173,7 +173,7 @@ class RemoveDuplicate extends Command
             $filePaths = [];
 
             if (empty($gallery)) {
-                return Cli::RETURN_SUCCESS;
+                continue;
             }
 
             foreach ($gallery as $key => $galleryImage) {
